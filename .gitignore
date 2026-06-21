@@ -42,3 +42,4 @@ storage-state*.json
 .idea/
 .vscode/
 npm-debug.log*
+.vercel
