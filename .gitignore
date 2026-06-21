@@ -1,0 +1,44 @@
+# Dependencies and Next.js output
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# Secrets — never commit any real environment file
+.env
+.env.*
+!.env.example
+
+# Local crawler and transcription runtime data
+local-data/
+downloads/
+media/
+audio/
+transcripts/
+manifests/
+logs/
+tmp/
+temp/
+*.mp4
+*.mkv
+*.webm
+*.mp3
+*.m4a
+*.wav
+*.srt
+*.vtt
+
+# Browser state and credentials
+chrome-profile/
+browser-profile/
+cookies*.txt
+cookies*.json
+storage-state*.json
+*.pem
+*.key
+
+# OS and editors
+.DS_Store
+.idea/
+.vscode/
+npm-debug.log*
