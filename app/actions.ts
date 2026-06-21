@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { formNumber, formShanghaiDateTime, formText } from "@/lib/format";
@@ -17,6 +18,31 @@ export async function login(formData: FormData) {
   const { error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) redirect(destination("/login", "error", "邮箱或密码不正确"));
   redirect("/");
+}
+
+export async function requestPasswordReset(formData: FormData) {
+  const supabase = await createClient();
+  const email = String(formData.get("email") ?? "").trim();
+  const headerStore = await headers();
+  const origin = headerStore.get("origin") ?? `https://${headerStore.get("host")}`;
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${origin}/auth/callback?next=/reset-password`
+  });
+  if (error) redirect(destination("/forgot-password", "error", "暂时无法发送重置邮件，请稍后再试"));
+  redirect(destination("/login", "success", "重置邮件已发送，请查看邮箱"));
+}
+
+export async function updatePassword(formData: FormData) {
+  const password = String(formData.get("password") ?? "");
+  const confirmation = String(formData.get("password_confirmation") ?? "");
+  if (password.length < 8) redirect(destination("/reset-password", "error", "密码至少需要 8 位"));
+  if (password !== confirmation) redirect(destination("/reset-password", "error", "两次输入的密码不一致"));
+
+  const supabase = await createClient();
+  const { error } = await supabase.auth.updateUser({ password });
+  if (error) redirect(destination("/reset-password", "error", "密码更新失败，请重新发送重置邮件"));
+  await supabase.auth.signOut();
+  redirect(destination("/login", "success", "密码已更新，请使用新密码登录"));
 }
 
 export async function logout() {
@@ -104,4 +130,3 @@ export async function toggleKeepOriginal(videoId: string, nextState: boolean) {
   await supabase.from("videos").update({ keep_original_file: nextState }).eq("id", videoId);
   revalidatePath(`/videos/${videoId}`);
 }
-

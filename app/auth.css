@@ -1,0 +1,12 @@
+.auth-link {
+  color: var(--green);
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  margin-top: 16px;
+  text-align: center;
+}
+
+.auth-link:hover {
+  text-decoration: underline;
+}

@@ -3,8 +3,8 @@ import { Flash } from "@/components/flash";
 
 export const dynamic = "force-dynamic";
 
-export default async function LoginPage({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
-  const { error } = await searchParams;
+export default async function LoginPage({ searchParams }: { searchParams: Promise<{ error?: string; success?: string }> }) {
+  const { error, success } = await searchParams;
   return <main className="auth-shell">
     <section className="auth-story">
       <div className="brand"><span className="brand-mark">CS</span> Creator Signal</div>
@@ -20,7 +20,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
         <span className="eyebrow">Welcome back</span>
         <h2>登录你的资料库</h2>
         <p>这里只开放给你自己的 Supabase 账号。</p>
-        <Flash error={error} />
+        <Flash error={error} success={success} />
         <div className="field" style={{ marginBottom: 16 }}>
           <label className="required" htmlFor="email">邮箱</label>
           <input className="input" id="email" name="email" type="email" autoComplete="email" required placeholder="you@example.com" />
@@ -30,8 +30,8 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
           <input className="input" id="password" name="password" type="password" autoComplete="current-password" required placeholder="••••••••" />
         </div>
         <button className="button button-primary" style={{ width: "100%" }} type="submit">登录</button>
+        <a className="auth-link" href="/forgot-password">忘记密码？</a>
       </form>
     </section>
   </main>;
 }
-

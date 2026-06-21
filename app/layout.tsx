@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./auth.css";
 
 export const metadata: Metadata = {
   title: "Creator Signal",
@@ -9,4 +10,3 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return <html lang="zh-CN"><body>{children}</body></html>;
 }
-
