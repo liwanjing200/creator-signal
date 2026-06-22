@@ -637,7 +637,7 @@ def transcribe_video(
 def process_queued_jobs(db: Any, *, limit: int, fetch_json: Any, fetch_comments: Any | None = None) -> dict[str, int]:
     jobs = db.request(
         "GET",
-        f"crawl_jobs?select=*&status=eq.queued&order=created_at.asc&limit={max(1, limit)}",
+        f"crawl_jobs?select=*&status=eq.queued&job_type=in.(bilibili_comments,transcribe_video)&order=created_at.asc&limit={max(1, limit)}",
     ) or []
     counts = {"processed": 0, "succeeded": 0, "failed": 0}
     for job in jobs:

@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { queueAllCreatorUpdates } from "@/app/actions";
+import { Flash } from "@/components/flash";
 import { Badge } from "@/components/badge";
 import { EmptyState } from "@/components/empty-state";
 import { createClient } from "@/lib/supabase/server";
@@ -18,7 +20,8 @@ function jobTone(status: CrawlJob["status"]) {
   return "neutral" as const;
 }
 
-export default async function DashboardPage() {
+export default async function DashboardPage({ searchParams }: { searchParams: Promise<{ success?: string; error?: string }> }) {
+  const messages = await searchParams;
   const supabase = await createClient();
   const today = chinaDayStart();
   const [creators, newVideos, pending, completed, failed, jobs] = await Promise.all([
@@ -34,8 +37,9 @@ export default async function DashboardPage() {
   return <>
     <header className="topbar">
       <div><span className="eyebrow">Overview</span><h1 className="page-title">内容情报仪表盘</h1><p className="page-subtitle">你关注的创作者、最新内容与本地任务，一眼看清。</p></div>
-      <div className="top-actions"><Link className="button button-secondary" href="/videos">查看视频</Link><Link className="button button-primary" href="/creators">＋ 添加博主</Link></div>
+      <div className="top-actions"><form action={queueAllCreatorUpdates}><button className="button button-primary" type="submit">↻ 更新全部</button></form><Link className="button button-secondary" href="/videos">查看视频</Link><Link className="button button-secondary" href="/creators">＋ 添加博主</Link></div>
     </header>
+    <Flash success={messages.success} error={messages.error} />
 
     <section className="stats-grid">
       <div className="stat-card"><div className="stat-label">追踪博主</div><div className="stat-value">{creators.count ?? 0}</div><div className="stat-note">当前启用的创作者</div></div>
@@ -72,4 +76,3 @@ export default async function DashboardPage() {
     </section>
   </>;
 }
-
