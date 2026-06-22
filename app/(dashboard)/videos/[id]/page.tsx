@@ -41,10 +41,10 @@ export default async function VideoDetailPage({ params }: { params: Promise<{ id
         {video.cover_url && <Image src={video.cover_url} alt="" width={240} height={145} unoptimized style={{ width: 180, height: 108, borderRadius: 10, objectFit: "cover", flex: "0 0 auto" }} />}
         <div><div className="detail-meta"><PlatformBadge platform={video.platform} /><Badge tone={video.transcript_status === "completed" ? "green" : video.transcript_status === "failed" ? "red" : "neutral"}>{transcriptLabel[video.transcript_status]}</Badge></div><h2 className="detail-title">{video.title}</h2><p className="detail-description">{video.description || "暂无视频简介"}</p><div className="cell-subtitle" style={{ marginTop: 10 }}>{video.creators?.name} · {formatDate(video.published_at, true)} · {formatDuration(video.duration_seconds)}</div></div>
       </div>
-      <div className="top-actions">
+      {video.platform !== "x" && <div className="top-actions">
         <form action={queueTranscription.bind(null, id, false, "small")}><button className="button button-secondary" type="submit">转写（small）</button></form>
         <form action={queueTranscription.bind(null, id, true, "medium")}><button className="button button-secondary" type="submit">用 medium 重新转写</button></form>
-      </div>
+      </div>}
     </section>
     <section className="metrics-row">
       <div className="metric"><div className="metric-label">播放</div><div className="metric-value">{formatNumber(video.view_count)}</div></div><div className="metric"><div className="metric-label">点赞</div><div className="metric-value">{formatNumber(video.like_count)}</div></div><div className="metric"><div className="metric-label">投币</div><div className="metric-value">{formatNumber(video.coin_count)}</div></div><div className="metric"><div className="metric-label">收藏</div><div className="metric-value">{formatNumber(video.favorite_count)}</div></div><div className="metric"><div className="metric-label">分享</div><div className="metric-value">{formatNumber(video.share_count)}</div></div><div className="metric"><div className="metric-label">评论</div><div className="metric-value">{formatNumber(video.comment_count)}</div></div><div className="metric"><div className="metric-label">弹幕</div><div className="metric-value">{formatNumber(video.danmaku_count)}</div></div><div className="metric"><div className="metric-label">数据快照</div><div className="metric-value">{metricSnapshots.length}</div></div>

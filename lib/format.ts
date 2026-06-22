@@ -1,4 +1,4 @@
-export const platformLabel = { bilibili: "B站", douyin: "抖音" } as const;
+export const platformLabel = { bilibili: "B站", douyin: "抖音", x: "X" } as const;
 
 export const transcriptLabel = {
   pending: "待转写",
@@ -63,4 +63,3 @@ export function formShanghaiDateTime(value: FormDataEntryValue | null) {
   const date = new Date(`${text}:00+08:00`);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
-

@@ -14,6 +14,7 @@
 - 任务日志列表与筛选
 - 视频详情中的评论、字幕、时间戳、内容参考和任务区域
 - B站最近视频、分 P、互动快照、公开章节与去重更新
+- X 官方 API 最近 Posts、媒体元数据、互动快照与去重更新
 - B站代表性根评论，可选少量回复、限制、延迟与失败重试
 - 抖音本地 Chrome CDP 主页/视频页采集、公开评论片段与页面章节
 - 平台字幕优先；没有字幕时才临时读取媒体音频并转写
@@ -52,7 +53,10 @@ python3 -m venv .venv
 # 抖音（先在 Chrome 打开并登录抖音，再开启 CDP）
 .venv/bin/python scripts/creator_signal.py douyin --max-videos 3
 
-# 两个平台最近视频一次运行
+# X 最近 Posts（X_BEARER_TOKEN 只保存在本机）
+.venv/bin/python scripts/creator_signal.py x --max-videos 10
+
+# 三个平台一次运行
 .venv/bin/python scripts/creator_signal.py all --max-videos 3
 ```
 

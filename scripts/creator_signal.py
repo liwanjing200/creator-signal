@@ -669,13 +669,133 @@ def command_douyin(args: argparse.Namespace) -> int:
     return 1 if total.failed and not (total.success or total.updated) else 0
 
 
+def x_api(path: str, params: dict[str, Any], retries: int) -> dict[str, Any]:
+    token = os.getenv("X_BEARER_TOKEN")
+    if not token:
+        raise RuntimeError("缺少本机 X_BEARER_TOKEN")
+    url = f"https://api.x.com/2/{path.lstrip('/')}?{urllib.parse.urlencode(params)}"
+    headers = {"Authorization": f"Bearer {token}", "User-Agent": "CreatorSignal/0.2"}
+    for attempt in range(retries + 1):
+        try:
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=45, context=TLS_CONTEXT) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:1000]
+            if exc.code in {401, 403} or attempt >= retries:
+                raise RuntimeError(f"X API {exc.code}: {detail}") from exc
+            time.sleep(min(2 ** attempt, 5))
+        except urllib.error.URLError:
+            if attempt >= retries:
+                raise
+            time.sleep(min(2 ** attempt, 5))
+    raise AssertionError("unreachable")
+
+
+def crawl_x_creator(db: SupabaseRest, creator: dict[str, Any], args: argparse.Namespace) -> tuple[Counters, dict[str, Any]]:
+    started = utc_now()
+    counters = Counters()
+    errors: list[str] = []
+    records: list[dict[str, Any]] = []
+    job = None
+    if not args.dry_run:
+        job = db.request("POST", "crawl_jobs", {
+            "platform": "x", "creator_id": creator["id"], "job_type": "x_crawl", "status": "running", "started_at": started,
+            "options_json": {"max_videos": args.max_videos, "force": args.force, "retries": args.retries},
+        }, "return=representation")[0]
+    try:
+        username = creator["profile_url"].rstrip("/").split("/")[-1].lstrip("@") or creator["platform_creator_id"].lstrip("@")
+        user_response = x_api(
+            f"users/by/username/{urllib.parse.quote(username)}",
+            {"user.fields": "id,name,username,description,profile_image_url,public_metrics"},
+            args.retries,
+        )
+        user = user_response.get("data")
+        if not user:
+            raise RuntimeError(f"X 找不到 @{username}")
+        user_id = user["id"]
+        metrics = user.get("public_metrics") or {}
+        if not args.dry_run:
+            db.request("PATCH", f"creators?id=eq.{creator['id']}", {
+                "name": user.get("name") or creator["name"], "profile_url": f"https://x.com/{user.get('username') or username}",
+                "platform_creator_id": user_id, "follower_count": metrics.get("followers_count"), "last_crawled_at": utc_now(),
+            })
+            db.request("POST", "creator_metrics_snapshots", {
+                "creator_id": creator["id"], "follower_count": metrics.get("followers_count"), "total_likes_count": None,
+            })
+        posts_response = x_api(
+            f"users/{user_id}/tweets",
+            {
+                "max_results": max(5, min(args.max_videos, 100)), "exclude": "replies",
+                "tweet.fields": "id,text,created_at,public_metrics,entities,attachments,referenced_tweets",
+                "expansions": "attachments.media_keys", "media.fields": "media_key,type,url,preview_image_url,width,height,duration_ms,alt_text",
+            },
+            args.retries,
+        )
+        media_by_key = {item["media_key"]: item for item in (posts_response.get("includes") or {}).get("media") or []}
+        for post in (posts_response.get("data") or [])[:args.max_videos]:
+            post_id = post["id"]
+            public = post.get("public_metrics") or {}
+            media = [media_by_key[key] for key in (post.get("attachments") or {}).get("media_keys") or [] if key in media_by_key]
+            existing = [] if args.dry_run else db.request("GET", f"videos?select=id&platform=eq.x&platform_video_id=eq.{post_id}&limit=1")
+            payload = {
+                "creator_id": creator["id"], "platform": "x", "platform_video_id": post_id,
+                "title": (post.get("text") or f"X Post {post_id}")[:160], "description": post.get("text") or None,
+                "video_url": f"https://x.com/{user.get('username') or username}/status/{post_id}",
+                "cover_url": next((item.get("preview_image_url") or item.get("url") for item in media if item.get("preview_image_url") or item.get("url")), None),
+                "published_at": post.get("created_at"), "parts_json": media,
+                "view_count": public.get("impression_count"), "like_count": public.get("like_count"),
+                "favorite_count": public.get("bookmark_count"), "share_count": public.get("retweet_count"),
+                "comment_count": public.get("reply_count"), "transcript_status": "skipped", "last_crawled_at": utc_now(),
+            }
+            if args.dry_run:
+                counters.success += 1
+                records.append({"action": "would_upsert", "post_id": post_id, "title": payload["title"]})
+                continue
+            row = db.request("POST", "videos?on_conflict=platform,platform_video_id", payload, "resolution=merge-duplicates,return=representation")[0]
+            db.request("POST", "video_metrics_snapshots", {
+                "video_id": row["id"], "view_count": payload["view_count"], "like_count": payload["like_count"],
+                "favorite_count": payload["favorite_count"], "share_count": payload["share_count"], "comment_count": payload["comment_count"],
+            })
+            counters.updated += int(bool(existing))
+            counters.success += int(not existing)
+            records.append({"action": "updated" if existing else "inserted", "post_id": post_id, "video_id": row["id"]})
+    except Exception as exc:
+        counters.failed += 1
+        errors.append(str(exc))
+    status = "succeeded" if not counters.failed else ("partially_succeeded" if counters.success or counters.updated else "failed")
+    manifest = {"job_id": job and job["id"], "job_type": "x_crawl", "creator": creator, "started_at": started, "finished_at": utc_now(),
+                "status": status, "counts": counters.__dict__, "errors": errors, "records": records}
+    if job:
+        path = Path(args.manifest_dir).expanduser().resolve() / f"x-{creator['id']}-{job['id']}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        db.request("PATCH", f"crawl_jobs?id=eq.{job['id']}", {"status": status, "finished_at": utc_now(), "success_count": counters.success,
+                   "updated_count": counters.updated, "skipped_count": counters.skipped, "failed_count": counters.failed,
+                   "error_summary": "\n".join(errors)[:4000] or None, "manifest_path": str(path)})
+    return counters, manifest
+
+
+def command_x(args: argparse.Namespace) -> int:
+    db = open_db(args.retries)
+    creators = db.tracked_creators("x", args.max_creators, args.creator_id)
+    total = Counters()
+    for creator in creators:
+        counters, manifest = crawl_x_creator(db, creator, args)
+        for field in total.__dict__:
+            setattr(total, field, getattr(total, field) + getattr(counters, field))
+        print(json.dumps({"creator": creator["name"], "status": manifest["status"], **counters.__dict__, "errors": manifest["errors"]}, ensure_ascii=False))
+    return 1 if total.failed and not (total.success or total.updated) else 0
+
+
 def command_all(args: argparse.Namespace) -> int:
     values = dict(vars(args))
     values.update({"creator_id": None, "manifest_dir": args.manifest_dir})
     bili_args = argparse.Namespace(**values)
     bili_code = command_bilibili(bili_args)
     douyin_code = command_douyin(bili_args)
-    return 1 if bili_code and douyin_code else 0
+    x_code = command_x(bili_args)
+    return 1 if bili_code and douyin_code and x_code else 0
 
 
 def parser() -> argparse.ArgumentParser:
@@ -731,7 +851,17 @@ def parser() -> argparse.ArgumentParser:
     douyin.add_argument("--manifest-dir", default=str(DEFAULT_MANIFEST_DIR))
     douyin.set_defaults(handler=command_douyin)
 
-    all_platforms = commands.add_parser("all", help="Run Bilibili and Douyin latest-video collection once")
+    x = commands.add_parser("x", help="Sync recent public X posts through the official API")
+    x.add_argument("--dry-run", action="store_true")
+    x.add_argument("--force", action="store_true")
+    x.add_argument("--max-creators", type=int)
+    x.add_argument("--creator-id")
+    x.add_argument("--max-videos", type=int, default=10)
+    x.add_argument("--retries", type=int, default=3)
+    x.add_argument("--manifest-dir", default=str(DEFAULT_MANIFEST_DIR))
+    x.set_defaults(handler=command_x)
+
+    all_platforms = commands.add_parser("all", help="Run Bilibili, Douyin, and X collection once")
     all_platforms.add_argument("--dry-run", action="store_true")
     all_platforms.add_argument("--force", action="store_true")
     all_platforms.add_argument("--max-creators", type=int)

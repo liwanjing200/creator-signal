@@ -28,13 +28,13 @@ export default async function CreatorsPage({ searchParams }: { searchParams: Pro
 
   return <>
     <header className="topbar">
-      <div><span className="eyebrow">Creators</span><h1 className="page-title">博主管理</h1><p className="page-subtitle">维护 B站和抖音创作者资料，决定谁进入采集队列。</p></div>
+      <div><span className="eyebrow">Creators</span><h1 className="page-title">博主管理</h1><p className="page-subtitle">维护 B站、抖音和 X 创作者资料，决定谁进入采集队列。</p></div>
       <div className="top-actions"><a className="button button-primary" href="#new-creator">＋ 新增博主</a></div>
     </header>
     <Flash success={params.success} error={params.error} />
     <form className="filters">
       <div className="filter-field search-field"><label htmlFor="q">搜索</label><input className="input" id="q" name="q" defaultValue={params.q} placeholder="搜索博主名称" /></div>
-      <div className="filter-field"><label htmlFor="platform">平台</label><select className="select" id="platform" name="platform" defaultValue={params.platform ?? ""}><option value="">全部平台</option><option value="bilibili">B站</option><option value="douyin">抖音</option></select></div>
+      <div className="filter-field"><label htmlFor="platform">平台</label><select className="select" id="platform" name="platform" defaultValue={params.platform ?? ""}><option value="">全部平台</option><option value="bilibili">B站</option><option value="douyin">抖音</option><option value="x">X</option></select></div>
       <div className="filter-field"><label htmlFor="category">分类</label><select className="select" id="category" name="category" defaultValue={params.category ?? ""}><option value="">全部分类</option>{categories.map((category) => <option key={category}>{category}</option>)}</select></div>
       <div className="filter-field"><label htmlFor="status">状态</label><select className="select" id="status" name="status" defaultValue={params.status ?? ""}><option value="">全部状态</option><option value="tracked">追踪中</option><option value="paused">已停用</option></select></div>
       <button className="button button-secondary" type="submit">筛选</button>
@@ -61,9 +61,9 @@ export default async function CreatorsPage({ searchParams }: { searchParams: Pro
       <form action={createCreator} className="card-body">
         <div className="form-grid">
           <div className="field"><label className="required" htmlFor="name">名称</label><input className="input" id="name" name="name" required /></div>
-          <div className="field"><label className="required" htmlFor="platform-new">平台</label><select className="select" id="platform-new" name="platform" required><option value="bilibili">B站</option><option value="douyin">抖音</option></select></div>
+          <div className="field"><label className="required" htmlFor="platform-new">平台</label><select className="select" id="platform-new" name="platform" required><option value="bilibili">B站</option><option value="douyin">抖音</option><option value="x">X</option></select></div>
           <div className="field form-span-2"><label className="required" htmlFor="profile_url">主页链接</label><input className="input" id="profile_url" name="profile_url" type="url" required placeholder="https://..." /></div>
-          <div className="field"><label className="required" htmlFor="platform_creator_id">平台 ID</label><input className="input" id="platform_creator_id" name="platform_creator_id" required /><span className="field-hint">B站 UID 或抖音用户标识</span></div>
+          <div className="field"><label className="required" htmlFor="platform_creator_id">平台 ID</label><input className="input" id="platform_creator_id" name="platform_creator_id" required /><span className="field-hint">B站 UID、抖音用户标识或 X @username</span></div>
           <div className="field"><label htmlFor="sec_uid">抖音 SecUID</label><input className="input" id="sec_uid" name="sec_uid" /></div>
           <div className="field"><label htmlFor="category-new">分类</label><input className="input" id="category-new" name="category" placeholder="例如：AI 工具" /></div>
           <div className="field"><label>追踪状态</label><label className="checkbox-field"><input name="is_tracked" type="checkbox" defaultChecked /> 加入采集队列</label></div>
@@ -75,4 +75,3 @@ export default async function CreatorsPage({ searchParams }: { searchParams: Pro
     </section>
   </>;
 }
-

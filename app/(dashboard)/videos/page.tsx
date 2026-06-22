@@ -6,7 +6,7 @@ import { EmptyState } from "@/components/empty-state";
 import { Flash } from "@/components/flash";
 import { PlatformBadge } from "@/components/platform-badge";
 import { createClient } from "@/lib/supabase/server";
-import { formatDate, formatNumber, transcriptLabel } from "@/lib/format";
+import { formatDate, formatNumber, platformLabel, transcriptLabel } from "@/lib/format";
 import type { Creator, Platform, TranscriptStatus, Video } from "@/lib/types";
 
 type Params = { q?: string; platform?: Platform; creator?: string; status?: TranscriptStatus; from?: string; to?: string; sort?: string; success?: string; error?: string };
@@ -31,7 +31,7 @@ export default async function VideosPage({ searchParams }: { searchParams: Promi
     <Flash success={params.success} error={params.error} />
     <form className="filters">
       <div className="filter-field search-field"><label htmlFor="q">搜索</label><input className="input" id="q" name="q" defaultValue={params.q} placeholder="搜索视频标题" /></div>
-      <div className="filter-field"><label htmlFor="platform">平台</label><select className="select" id="platform" name="platform" defaultValue={params.platform ?? ""}><option value="">全部</option><option value="bilibili">B站</option><option value="douyin">抖音</option></select></div>
+      <div className="filter-field"><label htmlFor="platform">平台</label><select className="select" id="platform" name="platform" defaultValue={params.platform ?? ""}><option value="">全部</option><option value="bilibili">B站</option><option value="douyin">抖音</option><option value="x">X</option></select></div>
       <div className="filter-field"><label htmlFor="creator">博主</label><select className="select" id="creator" name="creator" defaultValue={params.creator ?? ""}><option value="">全部</option>{creators.map((creator) => <option value={creator.id} key={creator.id}>{creator.name}</option>)}</select></div>
       <div className="filter-field"><label htmlFor="status">字幕</label><select className="select" id="status" name="status" defaultValue={params.status ?? ""}><option value="">全部</option><option value="pending">待转写</option><option value="processing">转写中</option><option value="completed">已完成</option><option value="failed">失败</option><option value="skipped">已跳过</option></select></div>
       <div className="filter-field"><label htmlFor="from">开始日期</label><input className="input" id="from" name="from" type="date" defaultValue={params.from} /></div>
@@ -52,7 +52,7 @@ export default async function VideosPage({ searchParams }: { searchParams: Promi
     <section className="card section-gap" id="new-video">
       <div className="card-header"><div><h2 className="card-title">添加测试视频</h2><div className="cell-subtitle">仅写入元数据，不下载任何媒体。</div></div></div>
       <form action={createVideo} className="card-body"><div className="form-grid">
-        <div className="field"><label className="required" htmlFor="creator-new">博主</label><select className="select" id="creator-new" name="creator_id" required><option value="">请选择</option>{creators.map((creator) => <option value={creator.id} key={creator.id}>{creator.name} · {creator.platform === "bilibili" ? "B站" : "抖音"}</option>)}</select></div>
+        <div className="field"><label className="required" htmlFor="creator-new">博主</label><select className="select" id="creator-new" name="creator_id" required><option value="">请选择</option>{creators.map((creator) => <option value={creator.id} key={creator.id}>{creator.name} · {platformLabel[creator.platform]}</option>)}</select></div>
         <div className="field"><label className="required" htmlFor="platform_video_id">平台视频 ID</label><input className="input" id="platform_video_id" name="platform_video_id" required placeholder="BVID 或 Aweme ID" /></div>
         <div className="field form-span-2"><label className="required" htmlFor="title">标题</label><input className="input" id="title" name="title" required /></div>
         <div className="field form-span-2"><label className="required" htmlFor="video_url">原视频链接</label><input className="input" id="video_url" name="video_url" type="url" required /></div>
@@ -68,4 +68,3 @@ export default async function VideosPage({ searchParams }: { searchParams: Promi
     </section>
   </>;
 }
-
