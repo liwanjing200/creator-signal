@@ -17,7 +17,27 @@
 - 视频详情中的评论、字幕、时间戳、内容参考和任务区域
 - “保留原文件”标记（只记录策略，不上传文件）
 
-采集器、评论抓取和本地 Whisper 尚未加入；页面中相关按钮会明确显示后续阶段，不会假装任务已经执行。
+B站最新视频采集已加入；评论抓取、抖音采集和本地 Whisper 尚未加入。页面中相关按钮会明确显示后续阶段，不会假装任务已经执行。
+
+## 本地 B站采集（阶段 2）
+
+在 Mac 上安装本地依赖：
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-local.txt
+```
+
+在仅保存在本机的 `.env.local` 中设置 `NEXT_PUBLIC_SUPABASE_URL` 和
+`SUPABASE_SERVICE_ROLE_KEY`，然后运行：
+
+```bash
+.venv/bin/python scripts/creator_signal.py bilibili --max-videos 3
+```
+
+支持 `--dry-run`、`--force`、`--max-creators`、`--max-videos` 和 `--retries`。
+采集器只读取公开元数据，不下载视频；每次运行会写入 `crawl_jobs`，并在
+`local-data/manifests` 保存 JSON 调试记录。
 
 ## 目录结构
 
