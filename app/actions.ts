@@ -179,3 +179,39 @@ export async function queueComments(videoId: string) {
 export async function queueTranscription(videoId: string, force = false, model = "small") {
   return queueVideoJob(videoId, "transcribe_video", { force, model });
 }
+
+const creatorJobType = { bilibili: "bilibili_crawl", douyin: "douyin_crawl", x: "x_crawl" } as const;
+
+export async function queueCreatorUpdate(creatorId: string) {
+  const supabase = await createClient();
+  const { data: creator } = await supabase.from("creators").select("id, platform").eq("id", creatorId).single();
+  if (!creator) redirect(destination(`/creators/${creatorId}`, "error", "找不到这个博主"));
+  const jobType = creatorJobType[creator.platform as Platform];
+  const { data: existing } = await supabase.from("crawl_jobs").select("id").eq("creator_id", creatorId)
+    .eq("job_type", jobType).in("status", ["queued", "running"]).limit(1).maybeSingle();
+  if (!existing) {
+    const { error } = await supabase.from("crawl_jobs").insert({
+      platform: creator.platform, creator_id: creatorId, job_type: jobType, status: "queued",
+      options_json: { max_videos: 3, retries: 3, force: false }
+    });
+    if (error) redirect(destination(`/creators/${creatorId}`, "error", error.message));
+  }
+  revalidatePath(`/creators/${creatorId}`); revalidatePath("/jobs"); revalidatePath("/");
+  redirect(destination(`/creators/${creatorId}`, "success", existing ? "更新任务已在等待或运行中" : "已加入更新队列，Mac 后台会自动处理"));
+}
+
+export async function queueAllCreatorUpdates() {
+  const supabase = await createClient();
+  const { data: creators } = await supabase.from("creators").select("id, platform").eq("is_tracked", true);
+  for (const creator of creators ?? []) {
+    const jobType = creatorJobType[creator.platform as Platform];
+    const { data: existing } = await supabase.from("crawl_jobs").select("id").eq("creator_id", creator.id)
+      .eq("job_type", jobType).in("status", ["queued", "running"]).limit(1).maybeSingle();
+    if (!existing) await supabase.from("crawl_jobs").insert({
+      platform: creator.platform, creator_id: creator.id, job_type: jobType, status: "queued",
+      options_json: { max_videos: 3, retries: 3, force: false }
+    });
+  }
+  revalidatePath("/"); revalidatePath("/jobs");
+  redirect(destination("/", "success", "全部追踪博主已加入更新队列"));
+}

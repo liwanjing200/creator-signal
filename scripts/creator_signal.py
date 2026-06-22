@@ -324,16 +324,17 @@ def crawl_creator(
     creator: dict[str, Any],
     args: argparse.Namespace,
     manifest_dir: Path,
+    job: dict[str, Any] | None = None,
 ) -> tuple[Counters, dict[str, Any]]:
-    started_at = utc_now()
-    job_id: str | None = None
+    started_at = (job or {}).get("started_at") or utc_now()
+    job_id: str | None = (job or {}).get("id")
     manifest_path: Path | None = None
     counters = Counters()
     errors: list[str] = []
     warnings: list[str] = []
     records: list[dict[str, Any]] = []
 
-    if not args.dry_run:
+    if not args.dry_run and not job:
         created = db.request(
             "POST",
             "crawl_jobs",
@@ -352,6 +353,7 @@ def crawl_creator(
             "return=representation",
         )
         job_id = created[0]["id"]
+    if job_id:
         manifest_path = manifest_dir / f"bilibili-{creator['platform_creator_id']}-{job_id}.json"
 
     try:
@@ -525,7 +527,10 @@ def command_transcribe(args: argparse.Namespace) -> int:
 def command_worker(args: argparse.Namespace) -> int:
     db = open_db(args.retries)
     while True:
-        counts = pipeline.process_queued_jobs(db, limit=args.max_jobs, fetch_json=fetch_json, fetch_comments=fetch_bilibili_comments)
+        creator_counts = process_queued_creator_jobs(db, args.max_jobs)
+        remaining = max(1, args.max_jobs - creator_counts["processed"])
+        video_counts = pipeline.process_queued_jobs(db, limit=remaining, fetch_json=fetch_json, fetch_comments=fetch_bilibili_comments)
+        counts = {key: creator_counts[key] + video_counts[key] for key in creator_counts}
         print(json.dumps(counts, ensure_ascii=False), flush=True)
         if args.once:
             return 1 if counts["failed"] else 0
@@ -561,13 +566,12 @@ def chapter_seconds(timestamp: str | None) -> float | None:
     return None
 
 
-def crawl_douyin_creator(db: SupabaseRest, creator: dict[str, Any], args: argparse.Namespace) -> tuple[Counters, dict[str, Any]]:
-    started = utc_now()
+def crawl_douyin_creator(db: SupabaseRest, creator: dict[str, Any], args: argparse.Namespace, job: dict[str, Any] | None = None) -> tuple[Counters, dict[str, Any]]:
+    started = (job or {}).get("started_at") or utc_now()
     counters = Counters()
     errors: list[str] = []
     records: list[dict[str, Any]] = []
-    job = None
-    if not args.dry_run:
+    if not args.dry_run and not job:
         job = db.request(
             "POST", "crawl_jobs",
             {"platform": "douyin", "creator_id": creator["id"], "job_type": "douyin_crawl", "status": "running", "started_at": started,
@@ -692,28 +696,53 @@ def x_api(path: str, params: dict[str, Any], retries: int) -> dict[str, Any]:
     raise AssertionError("unreachable")
 
 
-def crawl_x_creator(db: SupabaseRest, creator: dict[str, Any], args: argparse.Namespace) -> tuple[Counters, dict[str, Any]]:
-    started = utc_now()
+def crawl_x_creator(db: SupabaseRest, creator: dict[str, Any], args: argparse.Namespace, job: dict[str, Any] | None = None) -> tuple[Counters, dict[str, Any]]:
+    started = (job or {}).get("started_at") or utc_now()
     counters = Counters()
     errors: list[str] = []
     records: list[dict[str, Any]] = []
-    job = None
-    if not args.dry_run:
+    if not args.dry_run and not job:
         job = db.request("POST", "crawl_jobs", {
             "platform": "x", "creator_id": creator["id"], "job_type": "x_crawl", "status": "running", "started_at": started,
             "options_json": {"max_videos": args.max_videos, "force": args.force, "retries": args.retries},
         }, "return=representation")[0]
     try:
         username = creator["profile_url"].rstrip("/").split("/")[-1].lstrip("@") or creator["platform_creator_id"].lstrip("@")
-        user_response = x_api(
-            f"users/by/username/{urllib.parse.quote(username)}",
-            {"user.fields": "id,name,username,description,profile_image_url,public_metrics"},
-            args.retries,
-        )
-        user = user_response.get("data")
-        if not user:
-            raise RuntimeError(f"X 找不到 @{username}")
-        user_id = user["id"]
+        try:
+            user_response = x_api(
+                f"users/by/username/{urllib.parse.quote(username)}",
+                {"user.fields": "id,name,username,description,profile_image_url,public_metrics"},
+                args.retries,
+            )
+            user = user_response.get("data")
+            if not user:
+                raise RuntimeError(f"X 找不到 @{username}")
+            user_id = user["id"]
+            posts_response = x_api(
+                f"users/{user_id}/tweets",
+                {
+                    "max_results": max(5, min(args.max_videos, 100)), "exclude": "replies",
+                    "tweet.fields": "id,text,created_at,public_metrics,entities,attachments,referenced_tweets",
+                    "expansions": "attachments.media_keys", "media.fields": "media_key,type,url,preview_image_url,width,height,duration_ms,alt_text",
+                },
+                args.retries,
+            )
+        except Exception as api_error:
+            command = ["node", str(ROOT / "scripts" / "x_cdp.mjs"), "--url", creator["profile_url"], "--max-posts", str(args.max_videos)]
+            completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=max(120, args.max_videos * 20))
+            if completed.returncode:
+                raise RuntimeError(f"X API 不可用；Chrome 页面采集也失败：{completed.stderr.strip() or api_error}") from api_error
+            browser_data = json.loads(completed.stdout)
+            user_id = browser_data.get("user_id") or creator["platform_creator_id"]
+            user = {"id": user_id, "name": creator["name"], "username": browser_data.get("username") or username,
+                    "public_metrics": {"followers_count": metric_number(browser_data.get("follower_text"))}}
+            posts_response = {"data": [
+                {"id": item["id"], "text": item["text"], "created_at": item.get("created_at"),
+                 "public_metrics": {"impression_count": item.get("view_count"), "like_count": item.get("like_count"),
+                                    "bookmark_count": item.get("bookmark_count"), "retweet_count": item.get("repost_count"), "reply_count": item.get("reply_count")},
+                 "browser_cover_url": item.get("cover_url"), "browser_is_pinned": item.get("is_pinned", False)}
+                for item in browser_data.get("posts") or []
+            ]}
         metrics = user.get("public_metrics") or {}
         if not args.dry_run:
             db.request("PATCH", f"creators?id=eq.{creator['id']}", {
@@ -723,15 +752,6 @@ def crawl_x_creator(db: SupabaseRest, creator: dict[str, Any], args: argparse.Na
             db.request("POST", "creator_metrics_snapshots", {
                 "creator_id": creator["id"], "follower_count": metrics.get("followers_count"), "total_likes_count": None,
             })
-        posts_response = x_api(
-            f"users/{user_id}/tweets",
-            {
-                "max_results": max(5, min(args.max_videos, 100)), "exclude": "replies",
-                "tweet.fields": "id,text,created_at,public_metrics,entities,attachments,referenced_tweets",
-                "expansions": "attachments.media_keys", "media.fields": "media_key,type,url,preview_image_url,width,height,duration_ms,alt_text",
-            },
-            args.retries,
-        )
         media_by_key = {item["media_key"]: item for item in (posts_response.get("includes") or {}).get("media") or []}
         for post in (posts_response.get("data") or [])[:args.max_videos]:
             post_id = post["id"]
@@ -742,8 +762,9 @@ def crawl_x_creator(db: SupabaseRest, creator: dict[str, Any], args: argparse.Na
                 "creator_id": creator["id"], "platform": "x", "platform_video_id": post_id,
                 "title": (post.get("text") or f"X Post {post_id}")[:160], "description": post.get("text") or None,
                 "video_url": f"https://x.com/{user.get('username') or username}/status/{post_id}",
-                "cover_url": next((item.get("preview_image_url") or item.get("url") for item in media if item.get("preview_image_url") or item.get("url")), None),
+                "cover_url": post.get("browser_cover_url") or next((item.get("preview_image_url") or item.get("url") for item in media if item.get("preview_image_url") or item.get("url")), None),
                 "published_at": post.get("created_at"), "parts_json": media,
+                "is_pinned": post.get("browser_is_pinned"),
                 "view_count": public.get("impression_count"), "like_count": public.get("like_count"),
                 "favorite_count": public.get("bookmark_count"), "share_count": public.get("retweet_count"),
                 "comment_count": public.get("reply_count"), "transcript_status": "skipped", "last_crawled_at": utc_now(),
@@ -786,6 +807,40 @@ def command_x(args: argparse.Namespace) -> int:
             setattr(total, field, getattr(total, field) + getattr(counters, field))
         print(json.dumps({"creator": creator["name"], "status": manifest["status"], **counters.__dict__, "errors": manifest["errors"]}, ensure_ascii=False))
     return 1 if total.failed and not (total.success or total.updated) else 0
+
+
+def process_queued_creator_jobs(db: SupabaseRest, limit: int) -> dict[str, int]:
+    jobs = db.request("GET", "crawl_jobs?select=*&status=eq.queued&job_type=in.(bilibili_crawl,douyin_crawl,x_crawl)"
+                      f"&order=created_at.asc&limit={max(1, limit)}") or []
+    counts = {"processed": 0, "succeeded": 0, "failed": 0}
+    for job in jobs:
+        started = utc_now()
+        db.request("PATCH", f"crawl_jobs?id=eq.{job['id']}&status=eq.queued", {"status": "running", "started_at": started})
+        job["started_at"] = started
+        creator_rows = db.request("GET", f"creators?select=*&id=eq.{job['creator_id']}&limit=1") or []
+        if not creator_rows:
+            pipeline.finish_job(db, job, status="failed", failed=1, error="找不到关联博主")
+            counts["processed"] += 1; counts["failed"] += 1
+            continue
+        options = job.get("options_json") or {}
+        task_args = argparse.Namespace(
+            dry_run=False, force=bool(options.get("force", False)), max_videos=int(options.get("max_videos", 3)),
+            retries=int(options.get("retries", 3)), wait_ms=int(options.get("wait_ms", 3500)),
+            manifest_dir=str(DEFAULT_MANIFEST_DIR),
+        )
+        try:
+            if job["job_type"] == "bilibili_crawl":
+                _, result = crawl_creator(db, creator_rows[0], task_args, DEFAULT_MANIFEST_DIR, job=job)
+            elif job["job_type"] == "douyin_crawl":
+                _, result = crawl_douyin_creator(db, creator_rows[0], task_args, job=job)
+            else:
+                _, result = crawl_x_creator(db, creator_rows[0], task_args, job=job)
+            counts["processed"] += 1
+            counts["succeeded" if result["status"] in {"succeeded", "partially_succeeded"} else "failed"] += 1
+        except Exception as exc:
+            pipeline.finish_job(db, job, status="failed", failed=1, error=str(exc))
+            counts["processed"] += 1; counts["failed"] += 1
+    return counts
 
 
 def command_all(args: argparse.Namespace) -> int:

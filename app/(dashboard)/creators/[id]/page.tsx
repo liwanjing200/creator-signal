@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { toggleCreator } from "@/app/actions";
+import { queueCreatorUpdate, toggleCreator } from "@/app/actions";
 import { Badge } from "@/components/badge";
 import { EmptyState } from "@/components/empty-state";
 import { Flash } from "@/components/flash";
@@ -9,9 +9,9 @@ import { createClient } from "@/lib/supabase/server";
 import { formatDate, formatNumber, transcriptLabel } from "@/lib/format";
 import type { Creator, Video } from "@/lib/types";
 
-export default async function CreatorDetailPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ success?: string }> }) {
+export default async function CreatorDetailPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ success?: string; error?: string }> }) {
   const { id } = await params;
-  const { success } = await searchParams;
+  const { success, error } = await searchParams;
   const supabase = await createClient();
   const [{ data: creatorData }, { data: videosData }, { data: snapshots }] = await Promise.all([
     supabase.from("creators").select("*").eq("id", id).single(),
@@ -27,14 +27,14 @@ export default async function CreatorDetailPage({ params, searchParams }: { para
       <div><span className="eyebrow">Creator profile</span><h1 className="page-title">{creator.name}</h1><p className="page-subtitle">创作者资料、内容列表和数据变化。</p></div>
       <div className="top-actions"><Link className="button button-secondary" href="/creators">← 返回</Link><Link className="button button-primary" href={`/creators/${id}/edit`}>编辑资料</Link></div>
     </header>
-    <Flash success={success} />
+    <Flash success={success} error={error} />
     <section className="detail-hero">
       <div>
         <div className="detail-meta"><PlatformBadge platform={creator.platform} /><Badge tone={creator.is_tracked ? "green" : "neutral"}>{creator.is_tracked ? "追踪中" : "已停用"}</Badge>{creator.category && <Badge>{creator.category}</Badge>}</div>
         <h2 className="detail-title">{creator.name}</h2>
         <p className="detail-description">平台 ID · {creator.platform_creator_id}{creator.sec_uid ? `\nSecUID · ${creator.sec_uid}` : ""}</p>
       </div>
-      <form action={toggleCreator.bind(null, id, !creator.is_tracked)}><button className={`button ${creator.is_tracked ? "button-danger" : "button-primary"}`} type="submit">{creator.is_tracked ? "停用追踪" : "启用追踪"}</button></form>
+      <div className="top-actions"><form action={queueCreatorUpdate.bind(null, id)}><button className="button button-primary" type="submit">立即更新</button></form><form action={toggleCreator.bind(null, id, !creator.is_tracked)}><button className={`button ${creator.is_tracked ? "button-danger" : "button-primary"}`} type="submit">{creator.is_tracked ? "停用追踪" : "启用追踪"}</button></form></div>
     </section>
     <section className="metrics-row">
       <div className="metric"><div className="metric-label">视频数</div><div className="metric-value">{videos.length}</div></div>
@@ -53,4 +53,3 @@ export default async function CreatorDetailPage({ params, searchParams }: { para
     {(snapshots?.length ?? 0) > 0 && <section className="card section-gap"><div className="card-header"><h2 className="card-title">数据趋势记录</h2><span className="cell-subtitle">最近 {snapshots?.length} 次</span></div><div className="card-body"><div className="timeline">{snapshots?.map((snapshot) => <div className="timeline-item" key={snapshot.id}><span className="timeline-dot" /><div className="timeline-title">{formatNumber(snapshot.follower_count)} 粉丝 · {formatNumber(snapshot.total_likes_count)} 获赞</div><div className="timeline-meta">{formatDate(snapshot.captured_at, true)}</div></div>)}</div></div></section>}
   </>;
 }
-

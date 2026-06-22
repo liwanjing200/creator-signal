@@ -30,8 +30,10 @@ function portOpen(port) {
 async function endpoint(explicit) {
   if (explicit?.startsWith("ws")) return explicit;
   if (explicit?.startsWith("http")) {
-    const response = await fetch(`${explicit.replace(/\/$/, "")}/json/version`);
-    return (await response.json()).webSocketDebuggerUrl;
+    try {
+      const response = await fetch(`${explicit.replace(/\/$/, "")}/json/version`);
+      return (await response.json()).webSocketDebuggerUrl;
+    } catch { /* discover Chrome's current port below */ }
   }
   const candidates = [
     path.join(os.homedir(), "Library/Application Support/Google/Chrome/DevToolsActivePort"),
