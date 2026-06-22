@@ -3,9 +3,9 @@
 
 create extension if not exists pgcrypto;
 
-create type public.platform_type as enum ('bilibili', 'douyin');
+create type public.platform_type as enum ('bilibili', 'douyin', 'x');
 create type public.job_status as enum ('queued', 'running', 'succeeded', 'partially_succeeded', 'failed', 'cancelled');
-create type public.job_type as enum ('bilibili_crawl', 'douyin_crawl', 'bilibili_comments', 'transcribe_video', 'full_crawl', 'manual');
+create type public.job_type as enum ('bilibili_crawl', 'douyin_crawl', 'x_crawl', 'bilibili_comments', 'transcribe_video', 'full_crawl', 'manual');
 create type public.transcript_status as enum ('pending', 'processing', 'completed', 'failed', 'skipped');
 create type public.transcript_source as enum ('platform_subtitle', 'srt', 'vtt', 'json_subtitle', 'public_copy', 'whisper_cpp', 'manual');
 

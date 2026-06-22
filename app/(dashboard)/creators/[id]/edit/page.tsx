@@ -19,7 +19,7 @@ export default async function EditCreatorPage({ params, searchParams }: { params
     <section className="card"><form action={updateCreator.bind(null, id)} className="card-body">
       <div className="form-grid">
         <div className="field"><label className="required" htmlFor="name">名称</label><input className="input" id="name" name="name" defaultValue={creator.name} required /></div>
-        <div className="field"><label className="required" htmlFor="platform">平台</label><select className="select" id="platform" name="platform" defaultValue={creator.platform}><option value="bilibili">B站</option><option value="douyin">抖音</option></select></div>
+        <div className="field"><label className="required" htmlFor="platform">平台</label><select className="select" id="platform" name="platform" defaultValue={creator.platform}><option value="bilibili">B站</option><option value="douyin">抖音</option><option value="x">X</option></select></div>
         <div className="field form-span-2"><label className="required" htmlFor="profile_url">主页链接</label><input className="input" id="profile_url" name="profile_url" type="url" defaultValue={creator.profile_url} required /></div>
         <div className="field"><label className="required" htmlFor="platform_creator_id">平台 ID</label><input className="input" id="platform_creator_id" name="platform_creator_id" defaultValue={creator.platform_creator_id} required /></div>
         <div className="field"><label htmlFor="sec_uid">抖音 SecUID</label><input className="input" id="sec_uid" name="sec_uid" defaultValue={creator.sec_uid ?? ""} /></div>
@@ -32,4 +32,3 @@ export default async function EditCreatorPage({ params, searchParams }: { params
     </form></section>
   </>;
 }
-

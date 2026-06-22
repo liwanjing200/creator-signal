@@ -1,4 +1,4 @@
-export type Platform = "bilibili" | "douyin";
+export type Platform = "bilibili" | "douyin" | "x";
 export type TranscriptStatus = "pending" | "processing" | "completed" | "failed" | "skipped";
 export type JobStatus = "queued" | "running" | "succeeded" | "partially_succeeded" | "failed" | "cancelled";
 
