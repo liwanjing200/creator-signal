@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Local Creator Signal ingestion CLI.
-
-Phase 2 currently implements Bilibili creator/video metadata ingestion only.
-It never downloads video media.
-"""
+"""Local Creator Signal ingestion and queued-task CLI."""
 
 from __future__ import annotations
 
@@ -11,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import ssl
 import subprocess
 import sys
@@ -22,6 +19,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import pipeline
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -112,6 +111,16 @@ class SupabaseRest:
         return self.request("GET", query) or []
 
 
+def open_db(retries: int) -> SupabaseRest:
+    load_dotenv(ROOT / ".env.local")
+    load_dotenv(ROOT / ".env")
+    url = os.getenv("NEXT_PUBLIC_SUPABASE_URL") or os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key:
+        raise SystemExit("Missing NEXT_PUBLIC_SUPABASE_URL/SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
+    return SupabaseRest(url, key, retries=retries)
+
+
 def fetch_json(url: str, retries: int) -> dict[str, Any]:
     headers = {"User-Agent": "Mozilla/5.0 CreatorSignal/0.1"}
     for attempt in range(retries + 1):
@@ -148,9 +157,9 @@ def public_json(url: str, retries: int, referer: str = "https://www.bilibili.com
 
 def recent_bvids_wbi(mid: str, max_videos: int, retries: int) -> list[str]:
     nav = public_json("https://api.bilibili.com/x/web-interface/nav", retries)
-    if nav.get("code") != 0:
-        raise RuntimeError(f"Bilibili nav failed: {nav.get('message')}")
-    wbi = nav["data"]["wbi_img"]
+    wbi = (nav.get("data") or {}).get("wbi_img")
+    if not wbi:
+        raise RuntimeError(f"Bilibili nav did not return WBI keys: {nav.get('message')}")
     img_key = Path(urllib.parse.urlparse(wbi["img_url"]).path).stem
     sub_key = Path(urllib.parse.urlparse(wbi["sub_url"]).path).stem
     source = img_key + sub_key
@@ -175,6 +184,32 @@ def recent_bvids_wbi(mid: str, max_videos: int, retries: int) -> list[str]:
     if payload.get("code") != 0:
         raise RuntimeError(f"Bilibili WBI search failed: {payload.get('code')} {payload.get('message')}")
     return [item["bvid"] for item in payload.get("data", {}).get("list", {}).get("vlist", []) if item.get("bvid")]
+
+
+def wbi_signed_data(path: str, params: dict[str, Any], retries: int, referer: str) -> dict[str, Any]:
+    nav = public_json("https://api.bilibili.com/x/web-interface/nav", retries, referer=referer)
+    wbi = (nav.get("data") or {}).get("wbi_img")
+    if not wbi:
+        raise RuntimeError(f"Bilibili nav did not return WBI keys: {nav.get('message')}")
+    source = Path(urllib.parse.urlparse(wbi["img_url"]).path).stem + Path(urllib.parse.urlparse(wbi["sub_url"]).path).stem
+    mixin_key = "".join(source[index] for index in MIXIN_KEY_ORDER)[:32]
+    signed = {**params, "wts": int(time.time())}
+    signed = {key: "".join(character for character in str(value) if character not in "!'()*") for key, value in signed.items()}
+    query = urllib.parse.urlencode(sorted(signed.items()))
+    signature = hashlib.md5((query + mixin_key).encode("utf-8")).hexdigest()
+    payload = public_json(f"https://api.bilibili.com{path}?{query}&w_rid={signature}", retries, referer=referer)
+    if payload.get("code") != 0:
+        raise RuntimeError(f"Bilibili WBI request failed: {payload.get('code')} {payload.get('message')}")
+    return payload.get("data") or {}
+
+
+def fetch_bilibili_comments(aid: int, limit: int, retries: int, bvid: str) -> dict[str, Any]:
+    return wbi_signed_data(
+        "/x/v2/reply/wbi/main",
+        {"oid": aid, "type": 1, "mode": 3, "ps": min(limit, 20), "next": 0},
+        retries,
+        f"https://www.bilibili.com/video/{bvid}",
+    )
 
 
 def recent_bvids(profile_url: str, creator_mid: str, max_videos: int, retries: int) -> list[str]:
@@ -247,6 +282,29 @@ def video_payload(creator_id: str, detail: dict[str, Any], crawled_at: str) -> d
     }
 
 
+def bilibili_chapters(detail: dict[str, Any], retries: int) -> list[dict[str, Any]]:
+    pages = detail.get("pages") or []
+    if not pages or not pages[0].get("cid"):
+        return []
+    url = "https://api.bilibili.com/x/player/v2?" + urllib.parse.urlencode({"bvid": detail["bvid"], "cid": pages[0]["cid"]})
+    try:
+        payload = public_json(url, retries, referer=f"https://www.bilibili.com/video/{detail['bvid']}")
+        if payload.get("code") != 0:
+            return []
+        chapters = []
+        for item in (payload.get("data") or {}).get("view_points") or []:
+            start = float(item.get("from") or 0)
+            chapters.append({
+                "start_seconds": start,
+                "timestamp": f"{int(start) // 60:02d}:{int(start) % 60:02d}",
+                "title": item.get("content") or item.get("title"),
+                "description": item.get("content") or None,
+            })
+        return chapters
+    except Exception:
+        return []
+
+
 def snapshot_payload(video_id: str, video: dict[str, Any], captured_at: str) -> dict[str, Any]:
     return {
         "video_id": video_id,
@@ -317,6 +375,9 @@ def crawl_creator(
                 )
                 crawled_at = utc_now()
                 video = video_payload(creator["id"], detail, crawled_at)
+                chapters = bilibili_chapters(detail, args.retries)
+                if chapters:
+                    video["chapters_json"] = chapters
                 existing = db.request(
                     "GET",
                     f"videos?select=id&platform=eq.bilibili&platform_video_id=eq.{urllib.parse.quote(bvid)}&limit=1",
@@ -390,13 +451,7 @@ def crawl_creator(
 
 
 def command_bilibili(args: argparse.Namespace) -> int:
-    load_dotenv(ROOT / ".env.local")
-    load_dotenv(ROOT / ".env")
-    url = os.getenv("NEXT_PUBLIC_SUPABASE_URL") or os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not key:
-        raise SystemExit("Missing NEXT_PUBLIC_SUPABASE_URL/SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
-    db = SupabaseRest(url, key, retries=args.retries)
+    db = open_db(args.retries)
     creators = db.tracked_creators("bilibili", args.max_creators, args.creator_id)
     if not creators:
         print("No tracked Bilibili creators found.")
@@ -413,6 +468,216 @@ def command_bilibili(args: argparse.Namespace) -> int:
     return 1 if total.failed and not (total.success or total.updated) else 0
 
 
+def selected_videos(db: SupabaseRest, platform: str, video_id: str | None, limit: int, pending_only: bool = False) -> list[dict[str, Any]]:
+    query = f"videos?select=*&platform=eq.{platform}&order=published_at.desc&limit={max(1, limit)}"
+    if video_id:
+        query += f"&id=eq.{urllib.parse.quote(video_id)}"
+    elif pending_only:
+        query += "&transcript_status=in.(pending,failed)"
+    return db.request("GET", query) or []
+
+
+def command_comments(args: argparse.Namespace) -> int:
+    db = open_db(args.retries)
+    videos = selected_videos(db, "bilibili", args.video_id, args.max_videos)
+    failed = 0
+    for video in videos:
+        result = pipeline.collect_bilibili_comments(
+            db,
+            video,
+            {
+                "limit": args.limit,
+                "include_replies": args.include_replies,
+                "delay": args.delay,
+                "retries": args.retries,
+            },
+            dry_run=args.dry_run,
+            fetch_json=fetch_json,
+            fetch_comments=fetch_bilibili_comments,
+        )
+        print(json.dumps({"video": video["title"], **result["counts"], "status": result["status"], "errors": result.get("errors", [])}, ensure_ascii=False))
+        failed += result["counts"]["failed"]
+    return 1 if failed and not args.dry_run else 0
+
+
+def command_transcribe(args: argparse.Namespace) -> int:
+    db = open_db(args.retries)
+    platform = args.platform or "bilibili"
+    videos = selected_videos(db, platform, args.video_id, args.max_videos, pending_only=not args.force)
+    failed = 0
+    for video in videos:
+        result = pipeline.transcribe_video(
+            db,
+            video,
+            {
+                "force": args.force,
+                "model": args.model,
+                "retries": args.retries,
+                "max_duration": args.max_duration,
+            },
+            dry_run=args.dry_run,
+        )
+        print(json.dumps(result, ensure_ascii=False))
+        failed += int(result.get("status") == "failed")
+    return 1 if failed else 0
+
+
+def command_worker(args: argparse.Namespace) -> int:
+    db = open_db(args.retries)
+    while True:
+        counts = pipeline.process_queued_jobs(db, limit=args.max_jobs, fetch_json=fetch_json, fetch_comments=fetch_bilibili_comments)
+        print(json.dumps(counts, ensure_ascii=False), flush=True)
+        if args.once:
+            return 1 if counts["failed"] else 0
+        time.sleep(max(2, args.poll_seconds))
+
+
+def metric_number(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip().lower()
+    multiplier = 1
+    if text.endswith(("万", "w")):
+        multiplier, text = 10_000, text[:-1]
+    elif text.endswith("亿"):
+        multiplier, text = 100_000_000, text[:-1]
+    try:
+        return int(float(text.replace(",", "")) * multiplier)
+    except ValueError:
+        return None
+
+
+def chapter_seconds(timestamp: str | None) -> float | None:
+    if not timestamp:
+        return None
+    try:
+        pieces = [int(part) for part in timestamp.split(":")]
+        if len(pieces) == 2:
+            return pieces[0] * 60 + pieces[1]
+        if len(pieces) == 3:
+            return pieces[0] * 3600 + pieces[1] * 60 + pieces[2]
+    except ValueError:
+        return None
+    return None
+
+
+def crawl_douyin_creator(db: SupabaseRest, creator: dict[str, Any], args: argparse.Namespace) -> tuple[Counters, dict[str, Any]]:
+    started = utc_now()
+    counters = Counters()
+    errors: list[str] = []
+    records: list[dict[str, Any]] = []
+    job = None
+    if not args.dry_run:
+        job = db.request(
+            "POST", "crawl_jobs",
+            {"platform": "douyin", "creator_id": creator["id"], "job_type": "douyin_crawl", "status": "running", "started_at": started,
+             "options_json": {"max_videos": args.max_videos, "force": args.force, "retries": args.retries}},
+            "return=representation",
+        )[0]
+    try:
+        command = [
+            "node", str(ROOT / "scripts" / "douyin_cdp.mjs"), "--url", creator["profile_url"],
+            "--max-videos", str(args.max_videos), "--wait-ms", str(args.wait_ms),
+        ]
+        endpoint = os.getenv("CHROME_CDP_URL")
+        if endpoint:
+            command += ["--endpoint", endpoint]
+        completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=max(120, args.max_videos * 30))
+        if completed.returncode:
+            raise RuntimeError(completed.stderr.strip() or "抖音 Chrome CDP 采集失败")
+        payload = json.loads(completed.stdout)
+        follower_count = metric_number(payload.get("follower_text"))
+        likes_count = metric_number(payload.get("likes_text"))
+        if not args.dry_run:
+            db.request("PATCH", f"creators?id=eq.{creator['id']}", {"follower_count": follower_count, "total_likes_count": likes_count, "last_crawled_at": utc_now()})
+            db.request("POST", "creator_metrics_snapshots", {"creator_id": creator["id"], "follower_count": follower_count, "total_likes_count": likes_count})
+        for card in payload.get("cards") or []:
+            aweme_id = str(card.get("aweme_id") or "")
+            if not aweme_id:
+                counters.skipped += 1
+                continue
+            existing = [] if args.dry_run else db.request("GET", f"videos?select=id&platform=eq.douyin&platform_video_id=eq.{urllib.parse.quote(aweme_id)}&limit=1")
+            if existing and not args.force:
+                counters.skipped += 1
+                continue
+            chapters = [
+                {**chapter, "start_seconds": chapter_seconds(chapter.get("timestamp"))}
+                for chapter in card.get("chapters") or []
+            ]
+            published = None
+            published_text = card.get("published_text")
+            if published_text:
+                normalized = re.sub(r"[年/.]", "-", str(published_text)).replace("月", "-").replace("日", "")
+                try:
+                    published = datetime.fromisoformat(normalized).replace(tzinfo=timezone.utc).isoformat()
+                except ValueError:
+                    pass
+            video = {
+                "creator_id": creator["id"], "platform": "douyin", "platform_video_id": aweme_id,
+                "title": card.get("title") or card.get("description") or aweme_id, "video_url": card.get("url") or f"https://www.douyin.com/video/{aweme_id}",
+                "cover_url": card.get("cover_url"), "description": card.get("description"), "published_at": published,
+                "chapters_json": chapters, "is_pinned": bool(card.get("is_pinned")), "last_crawled_at": utc_now(),
+            }
+            if args.dry_run:
+                records.append({"action": "would_upsert", "video": video, "public_comment_samples": len(card.get("comments") or [])})
+                counters.success += 1
+                continue
+            row = db.request("POST", "videos?on_conflict=platform,platform_video_id", video, "resolution=merge-duplicates,return=representation")[0]
+            video_id = row["id"]
+            for index, comment in enumerate(card.get("comments") or []):
+                content = str(comment.get("content") or "").strip()
+                if not content:
+                    continue
+                comment_key = hashlib.sha256(f"{aweme_id}:{index}:{content}".encode()).hexdigest()[:32]
+                db.request(
+                    "POST", "comments?on_conflict=video_id,platform_comment_id",
+                    {"video_id": video_id, "platform_comment_id": comment_key, "author_name": comment.get("author"), "content": content,
+                     "like_count": metric_number(comment.get("like_text")), "is_representative": True, "is_partial_public_sample": True},
+                    "resolution=merge-duplicates",
+                )
+            counters.updated += int(bool(existing))
+            counters.success += int(not existing)
+            records.append({"action": "updated" if existing else "inserted", "aweme_id": aweme_id, "video_id": video_id})
+    except Exception as exc:
+        counters.failed += 1
+        errors.append(str(exc))
+    status = "succeeded" if not counters.failed else ("partially_succeeded" if counters.success or counters.updated else "failed")
+    manifest = {
+        "job_id": job and job["id"], "job_type": "douyin_crawl", "creator": creator, "started_at": started, "finished_at": utc_now(),
+        "status": status, "counts": counters.__dict__, "errors": errors, "records": records,
+        "comment_notice": "抖音评论来自页面公开可见片段，不是完整评论 API 数据。",
+    }
+    if job:
+        path = Path(args.manifest_dir).expanduser().resolve() / f"douyin-{creator['platform_creator_id']}-{job['id']}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        db.request("PATCH", f"crawl_jobs?id=eq.{job['id']}", {"status": status, "finished_at": utc_now(), "success_count": counters.success,
+                   "updated_count": counters.updated, "skipped_count": counters.skipped, "failed_count": counters.failed,
+                   "error_summary": "\n".join(errors)[:4000] or None, "manifest_path": str(path)})
+    return counters, manifest
+
+
+def command_douyin(args: argparse.Namespace) -> int:
+    db = open_db(args.retries)
+    creators = db.tracked_creators("douyin", args.max_creators, args.creator_id)
+    total = Counters()
+    for creator in creators:
+        counters, manifest = crawl_douyin_creator(db, creator, args)
+        for field in total.__dict__:
+            setattr(total, field, getattr(total, field) + getattr(counters, field))
+        print(json.dumps({"creator": creator["name"], "status": manifest["status"], **counters.__dict__}, ensure_ascii=False))
+    return 1 if total.failed and not (total.success or total.updated) else 0
+
+
+def command_all(args: argparse.Namespace) -> int:
+    values = dict(vars(args))
+    values.update({"creator_id": None, "manifest_dir": args.manifest_dir})
+    bili_args = argparse.Namespace(**values)
+    bili_code = command_bilibili(bili_args)
+    douyin_code = command_douyin(bili_args)
+    return 1 if bili_code and douyin_code else 0
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="creator-signal", description="Creator Signal local ingestion")
     commands = root.add_subparsers(dest="command", required=True)
@@ -425,6 +690,56 @@ def parser() -> argparse.ArgumentParser:
     bilibili.add_argument("--retries", type=int, default=3)
     bilibili.add_argument("--manifest-dir", default=str(DEFAULT_MANIFEST_DIR))
     bilibili.set_defaults(handler=command_bilibili)
+
+    comments = commands.add_parser("bilibili-comments", help="Collect representative Bilibili root comments")
+    comments.add_argument("--video-id", help="Run one Creator Signal video UUID")
+    comments.add_argument("--max-videos", type=int, default=10)
+    comments.add_argument("--limit", type=int, default=30)
+    comments.add_argument("--include-replies", action="store_true")
+    comments.add_argument("--delay", type=float, default=1.0)
+    comments.add_argument("--retries", type=int, default=3)
+    comments.add_argument("--dry-run", action="store_true")
+    comments.add_argument("--force", action="store_true", help="Accepted for consistent automation interfaces")
+    comments.set_defaults(handler=command_comments)
+
+    transcribe = commands.add_parser("transcribe", help="Read platform subtitles or transcribe locally")
+    transcribe.add_argument("--video-id", help="Run one Creator Signal video UUID")
+    transcribe.add_argument("--platform", choices=["bilibili", "douyin"])
+    transcribe.add_argument("--max-videos", type=int, default=1)
+    transcribe.add_argument("--model", choices=["small", "medium"], default="small")
+    transcribe.add_argument("--max-duration", type=int, default=7200)
+    transcribe.add_argument("--retries", type=int, default=3)
+    transcribe.add_argument("--dry-run", action="store_true")
+    transcribe.add_argument("--force", action="store_true")
+    transcribe.set_defaults(handler=command_transcribe)
+
+    worker = commands.add_parser("worker", help="Process jobs queued from the website")
+    worker.add_argument("--once", action="store_true")
+    worker.add_argument("--max-jobs", type=int, default=5)
+    worker.add_argument("--poll-seconds", type=int, default=15)
+    worker.add_argument("--retries", type=int, default=3)
+    worker.set_defaults(handler=command_worker)
+
+    douyin = commands.add_parser("douyin", help="Collect Douyin profiles and public page fragments through local Chrome CDP")
+    douyin.add_argument("--dry-run", action="store_true")
+    douyin.add_argument("--force", action="store_true")
+    douyin.add_argument("--max-creators", type=int)
+    douyin.add_argument("--creator-id")
+    douyin.add_argument("--max-videos", type=int, default=3)
+    douyin.add_argument("--retries", type=int, default=3)
+    douyin.add_argument("--wait-ms", type=int, default=3500)
+    douyin.add_argument("--manifest-dir", default=str(DEFAULT_MANIFEST_DIR))
+    douyin.set_defaults(handler=command_douyin)
+
+    all_platforms = commands.add_parser("all", help="Run Bilibili and Douyin latest-video collection once")
+    all_platforms.add_argument("--dry-run", action="store_true")
+    all_platforms.add_argument("--force", action="store_true")
+    all_platforms.add_argument("--max-creators", type=int)
+    all_platforms.add_argument("--max-videos", type=int, default=3)
+    all_platforms.add_argument("--retries", type=int, default=3)
+    all_platforms.add_argument("--wait-ms", type=int, default=3500)
+    all_platforms.add_argument("--manifest-dir", default=str(DEFAULT_MANIFEST_DIR))
+    all_platforms.set_defaults(handler=command_all)
     return root
 
 

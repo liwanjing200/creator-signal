@@ -1,5 +1,7 @@
 # Dependencies and Next.js output
 node_modules/
+__pycache__/
+*.py[cod]
 .next/
 out/
 *.tsbuildinfo

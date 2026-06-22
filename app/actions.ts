@@ -130,3 +130,52 @@ export async function toggleKeepOriginal(videoId: string, nextState: boolean) {
   await supabase.from("videos").update({ keep_original_file: nextState }).eq("id", videoId);
   revalidatePath(`/videos/${videoId}`);
 }
+
+async function queueVideoJob(
+  videoId: string,
+  jobType: "bilibili_comments" | "transcribe_video",
+  options: Record<string, unknown> = {}
+) {
+  const supabase = await createClient();
+  const { data: video } = await supabase
+    .from("videos")
+    .select("id, creator_id, platform")
+    .eq("id", videoId)
+    .single();
+  if (!video) redirect(destination(`/videos/${videoId}`, "error", "找不到这个视频"));
+  if (jobType === "bilibili_comments" && video.platform !== "bilibili") {
+    redirect(destination(`/videos/${videoId}`, "error", "这个按钮只用于 B站评论"));
+  }
+  const { data: existing } = await supabase
+    .from("crawl_jobs")
+    .select("id")
+    .eq("video_id", videoId)
+    .eq("job_type", jobType)
+    .in("status", ["queued", "running"])
+    .limit(1)
+    .maybeSingle();
+  if (existing) redirect(destination(`/videos/${videoId}`, "success", "任务已经在等待或运行中"));
+  const { error } = await supabase.from("crawl_jobs").insert({
+    platform: video.platform,
+    creator_id: video.creator_id,
+    video_id: video.id,
+    job_type: jobType,
+    status: "queued",
+    options_json: options
+  });
+  if (error) redirect(destination(`/videos/${videoId}`, "error", error.message));
+  if (jobType === "transcribe_video") {
+    await supabase.from("videos").update({ transcript_status: "pending" }).eq("id", videoId);
+  }
+  revalidatePath(`/videos/${videoId}`);
+  revalidatePath("/jobs");
+  redirect(destination(`/videos/${videoId}`, "success", "任务已加入队列，请保持 Mac 本地任务执行器运行"));
+}
+
+export async function queueComments(videoId: string) {
+  return queueVideoJob(videoId, "bilibili_comments", { limit: 30, include_replies: false, delay: 1 });
+}
+
+export async function queueTranscription(videoId: string, force = false, model = "small") {
+  return queueVideoJob(videoId, "transcribe_video", { force, model });
+}

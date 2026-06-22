@@ -4,9 +4,7 @@
 
 本项目只借鉴 `dragon-hh/ai-boshu-crawler` 的“创作者 → 最新视频 → 评论/字幕 → 任务记录”工作流边界，代码和数据模型均为独立实现。项目不使用飞书、lark-cli、Airtable、Docker、CUDA，也不建设长期云端视频仓库。
 
-## 当前阶段
-
-阶段 1 已实现：
+## 已实现能力
 
 - Supabase 完整业务表、索引、触发器和单用户 RLS
 - 邮箱密码登录，无公开注册入口
@@ -15,11 +13,16 @@
 - 视频手工录入、搜索、筛选、排序与详情页
 - 任务日志列表与筛选
 - 视频详情中的评论、字幕、时间戳、内容参考和任务区域
-- “保留原文件”标记（只记录策略，不上传文件）
+- B站最近视频、分 P、互动快照、公开章节与去重更新
+- B站代表性根评论，可选少量回复、限制、延迟与失败重试
+- 抖音本地 Chrome CDP 主页/视频页采集、公开评论片段与页面章节
+- 平台字幕优先；没有字幕时才临时读取媒体音频并转写
+- Apple Silicon 使用 MLX/Metal；也兼容 `whisper.cpp`，默认 small，可选 medium
+- 原始字幕、清洗字幕、时间戳段落、TXT/SRT/JSON、本地参考摘要与候选关键句
+- 网页“评论/转写/重新转写”按钮写入任务队列，由 Mac 本地 worker 执行
+- 转写成功后自动清理临时媒体；标记保留的原文件只留在 Mac 或外接硬盘
 
-B站最新视频采集已加入；评论抓取、抖音采集和本地 Whisper 尚未加入。页面中相关按钮会明确显示后续阶段，不会假装任务已经执行。
-
-## 本地 B站采集（阶段 2）
+## 本地运行
 
 在 Mac 上安装本地依赖：
 
@@ -31,13 +34,39 @@ python3 -m venv .venv
 在仅保存在本机的 `.env.local` 中设置 `NEXT_PUBLIC_SUPABASE_URL` 和
 `SUPABASE_SERVICE_ROLE_KEY`，然后运行：
 
+常用命令：
+
 ```bash
+# B站最近视频与互动数据
 .venv/bin/python scripts/creator_signal.py bilibili --max-videos 3
+
+# B站代表性评论
+.venv/bin/python scripts/creator_signal.py bilibili-comments --max-videos 10 --limit 30
+
+# 单视频字幕读取/转录
+.venv/bin/python scripts/creator_signal.py transcribe --video-id VIDEO_UUID --model small
+
+# 处理网页按钮加入的任务；保持此命令运行即可从网页操作 Mac
+.venv/bin/python scripts/creator_signal.py worker
+
+# 抖音（先在 Chrome 打开并登录抖音，再开启 CDP）
+.venv/bin/python scripts/creator_signal.py douyin --max-videos 3
+
+# 两个平台最近视频一次运行
+.venv/bin/python scripts/creator_signal.py all --max-videos 3
 ```
 
-支持 `--dry-run`、`--force`、`--max-creators`、`--max-videos` 和 `--retries`。
-采集器只读取公开元数据，不下载视频；每次运行会写入 `crawl_jobs`，并在
-`local-data/manifests` 保存 JSON 调试记录。
+采集命令支持 `--dry-run`、`--force`、`--max-creators`、`--max-videos` 和 `--retries`。
+评论命令还支持 `--include-replies`、`--limit` 和 `--delay`。每次任务都会写入
+`crawl_jobs`，并在 `local-data/manifests` 保存 JSON 调试记录。
+
+首次本地转录可运行 `scripts/setup_whisper_mac.sh small`。有 Homebrew 时使用
+`whisper.cpp`；没有 Homebrew 的 Apple Silicon Mac 使用 MLX/Metal。medium 模型只在手工
+重新转录重要视频时下载。模型和媒体都不会上传到 Supabase。
+
+抖音使用已登录的本地 Chrome 页面状态。请在 `chrome://inspect/#remote-debugging`
+开启远程调试；程序只读取主页和视频页可见内容。抖音评论始终写入
+`is_partial_public_sample=true`，网页明确显示“不是完整评论 API 数据”。
 
 ## 目录结构
 
@@ -69,14 +98,12 @@ Creator Signal/
 └── package.json
 ```
 
-后续阶段计划增加以下本地目录；阶段 1 不创建空壳自动化：
-
 ```text
-local/
-├── creator_hub/                   # Supabase 客户端、采集、转写、清洗
-├── commands/                      # bili / douyin / comments / transcribe / all
-├── tests/
-└── pyproject.toml
+scripts/
+├── creator_signal.py              # bili / douyin / comments / transcribe / worker / all
+├── pipeline.py                    # 评论、字幕、Metal 转录、清洗和任务执行
+├── douyin_cdp.mjs                 # 本地 Chrome CDP 页面读取
+└── setup_whisper_mac.sh           # Apple Silicon 转录环境
 
 local-data/                        # 永远忽略：manifest、日志、临时媒体、字幕
 ```
@@ -132,7 +159,7 @@ NEXT_PUBLIC_SUPABASE_URL=你的项目地址
 NEXT_PUBLIC_SUPABASE_ANON_KEY=你的anon密钥
 ```
 
-阶段 1 网页不需要 `SUPABASE_SERVICE_ROLE_KEY`。不要把它加到 Vercel。
+网页永远不需要 `SUPABASE_SERVICE_ROLE_KEY`。不要把它加到 Vercel；此密钥只供 Mac 本地脚本使用。
 
 ### 3. 验收阶段 1
 
@@ -159,10 +186,5 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=你的anon密钥
 - service role key 只放未来 Mac 本地脚本的 `.env`，绝不进入 Vercel。
 - `.gitignore` 已覆盖环境文件、Cookie、Chrome Profile、媒体、字幕、manifest 和日志。
 - 数据库存本地文件路径只是为了追踪状态，不会把 Mac 文件上传到 Supabase。
-- 第一版没有公开注册、多人协作、付费、发布 X 或固定模板式“洞察”。
-
-## 后续阶段边界
-
-- 阶段 2：B站最近视频、互动快照、去重 upsert、JSON manifest。
-- 阶段 3：B站代表性评论；Chrome CDP 抖音主页/视频页和少量公开评论。
-- 阶段 4：平台字幕优先，必要时临时下载；`ffmpeg` 16kHz 单声道；`whisper.cpp` Metal，默认 small，可手工 medium；成功写库后清理临时媒体。
+- 没有公开注册、多人协作、付费、发布 X 或固定模板式“洞察”。
+- `reference_summary` 和 `candidate_quotes` 只是本地规则抽取，明确不冒充深度 AI 分析。
